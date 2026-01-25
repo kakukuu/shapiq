@@ -70,6 +70,90 @@ def load_california_housing(
     return x_data, y_data
 
 
+def load_bike_sharing_daily(
+    *, to_numpy: bool = False, preprocessed: bool = True
+) -> tuple[pd.DataFrame, pd.Series | pd.DataFrame] | tuple[np.ndarray, np.ndarray]:
+    """Load the daily bike-sharing dataset used in CauSHAPley paper.
+
+    This is the daily aggregated version (731 rows) from UCI, used for
+    reproducing Heskes et al. (2020) "Causal Shapley Values" NeurIPS paper.
+
+    Args:
+        to_numpy: Return numpy objects instead of pandas. Default is ``False``.
+        preprocessed: Apply the same preprocessing as CauSHAPley paper. Default is ``True``.
+            This includes computing trend, cosyear, sinyear and unnormalizing temp/atemp/etc.
+
+    Returns:
+        The daily bike-sharing dataset as a pandas DataFrame.
+
+    Example:
+        >>> from shapiq.datasets import load_bike_sharing_daily
+        >>> x_data, y_data = load_bike_sharing_daily()
+        >>> print(x_data.shape, y_data.shape)
+        ((731, 7), (731,))
+
+    Note:
+        The features returned when preprocessed=True are:
+        - trend: Days since 1 January 2011
+        - cosyear: cos(2π × trend / 365) - seasonal cycle
+        - sinyear: sin(2π × trend / 365) - seasonal cycle
+        - temp: Temperature in Celsius (unnormalized from [-8, 39])
+        - atemp: Feeling temperature in Celsius (unnormalized from [-16, 50])
+        - windspeed: Wind speed (unnormalized, max 67)
+        - hum: Humidity percentage (unnormalized, 0-100)
+
+    """
+    dataset = _try_load("bike_sharing_daily.csv")
+
+    if preprocessed:
+        # Parse dates and compute trend (Days since 1 January 2011)
+        dataset['dteday'] = pd.to_datetime(dataset['dteday'])
+        dataset['trend'] = (dataset['dteday'] - dataset['dteday'].iloc[0]).dt.total_seconds() / (24 * 3600)
+
+        # Compute cyclical season variables (matching CauSHAPley paper)
+        dataset['cosyear'] = np.cos(dataset['trend'] / 365 * 2 * np.pi)
+        dataset['sinyear'] = np.sin(dataset['trend'] / 365 * 2 * np.pi)
+
+        # Unnormalize variables (see UCI dataset documentation and CauSHAPley paper)
+        dataset['temp'] = dataset['temp'] * (39 - (-8)) + (-8)
+        dataset['atemp'] = dataset['atemp'] * (50 - (-16)) + (-16)
+        dataset['windspeed'] = 67 * dataset['windspeed']
+        dataset['hum'] = 100 * dataset['hum']
+
+        # Select features used in CauSHAPley paper
+        feature_names = ['trend', 'cosyear', 'sinyear', 'temp', 'atemp', 'windspeed', 'hum']
+        x_data = dataset[feature_names]
+        y_data = dataset['cnt']
+    else:
+        # Return raw data
+        class_label = 'cnt'
+        y_data = dataset[class_label]
+        x_data = dataset.drop(columns=[class_label, 'instant', 'dteday', 'casual', 'registered'])
+
+    if to_numpy:
+        return x_data.to_numpy(), y_data.to_numpy()
+    return x_data, y_data
+
+
+def load_bike_sharing_daily_train_index() -> np.ndarray:
+    """Load the training indices for bike_sharing_daily dataset.
+
+    These indices are from the original CauSHAPley paper to ensure reproducibility.
+
+    Returns:
+        Array of training indices (587 samples out of 731 total).
+
+    Example:
+        >>> from shapiq.datasets import load_bike_sharing_daily_train_index
+        >>> train_idx = load_bike_sharing_daily_train_index()
+        >>> print(len(train_idx))
+        587
+
+    """
+    path = Path(SHAPIQ_DATASETS_FOLDER) / "train_index.npy"
+    return np.load(path)
+
+
 def load_bike_sharing(
     *, to_numpy: bool = False
 ) -> tuple[pd.DataFrame, pd.Series | pd.DataFrame] | tuple[np.ndarray, np.ndarray]:

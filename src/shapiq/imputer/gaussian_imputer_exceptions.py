@@ -14,8 +14,11 @@ class CategoricalFeatureError(ValueError):
         """
         feature_names = [f"f{i + 1}" for i in feature_indices]
         message = (
-            f"The following are categorical features: {', '.join(feature_names)}. "
-            "Gaussian imputation does not support categorical features."
+            f"The following are categorical/binary features: {', '.join(feature_names)}. "
+            "GaussianImputer assumes multivariate normal distribution and does not support "
+            "categorical or binary features. Options: (1) Remove these features, or "
+            "(2) Use CausalImputer with sampling_method='copula' or 'empirical' which "
+            "can handle mixed data types."
         )
         super().__init__(message)
         self.feature_indices = feature_indices

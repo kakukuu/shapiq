@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 
 TabularExplainerApproximators = Literal["spex", "montecarlo", "svarm", "permutation", "regression"]
-TabularExplainerImputers = Literal["marginal", "baseline", "conditional"]
+TabularExplainerImputers = Literal["marginal", "baseline", "conditional", "causal"]
 TabularExplainerIndices = ExplainerIndices
 
 
@@ -110,6 +110,7 @@ class TabularExplainer(Explainer):
         """
         from shapiq.imputer import (
             BaselineImputer,
+            CausalImputer,
             GenerativeConditionalImputer,
             MarginalImputer,
             TabPFNImputer,
@@ -149,15 +150,24 @@ class TabularExplainer(Explainer):
                 random_state=random_state,
                 **kwargs,
             )
+        elif imputer == "causal":
+            self._imputer = CausalImputer(
+                self.predict,
+                self._data,
+                random_state=random_state,
+                ordering=kwargs.pop("ordering", None),
+                confounding=kwargs.pop("confounding", None),
+                **kwargs,
+            )
         elif isinstance(
             imputer,
-            MarginalImputer | GenerativeConditionalImputer | BaselineImputer | TabPFNImputer,
+            MarginalImputer | GenerativeConditionalImputer | BaselineImputer | TabPFNImputer | CausalImputer,
         ):
             self._imputer = imputer
         else:
             msg = (
                 f"Invalid imputer {imputer}. "
-                f'Must be one of ["marginal", "baseline", "conditional"], or a valid Imputer '
+                f'Must be one of ["marginal", "baseline", "conditional", "causal"], or a valid Imputer '
                 f"object."
             )
             raise ValueError(msg)

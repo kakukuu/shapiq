@@ -1,10 +1,12 @@
 """Imputer objects for the shapiq package."""
 
 from .baseline_imputer import BaselineImputer
+from .causal_imputer import CausalImputer
 from .gaussian_copula_imputer import GaussianCopulaImputer
 from .gaussian_imputer import GaussianImputer
 from .generative_conditional_imputer import GenerativeConditionalImputer
 from .marginal_imputer import MarginalImputer
+from .no_model_causal_imputer import NoModelCausalImputer
 from .tabpfn_imputer import TabPFNImputer
 
 __all__ = [
@@ -14,4 +16,6 @@ __all__ = [
     "TabPFNImputer",
     "GaussianImputer",
     "GaussianCopulaImputer",
+    "CausalImputer",
+    "NoModelCausalImputer",
 ]
