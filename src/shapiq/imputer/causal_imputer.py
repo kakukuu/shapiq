@@ -1,4 +1,4 @@
-"""Causal-aware imputer implementing Causal SHAP with multiple sampling backends."""
+﻿"""Causal-aware imputer implementing Causal SHAP with multiple sampling backends."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import numpy as np
 from scipy.stats import norm, rankdata
 
 from .gaussian_imputer import GaussianImputer
-from shapiq.causal.graph import CausalGraph
+from shapiq.causal.ordering_graph import OrderingGraph
 
 if TYPE_CHECKING:
     import numpy.typing as npt
@@ -38,7 +38,7 @@ class CausalImputer(GaussianImputer):
       No distributional assumptions but requires sufficient training data.
 
     Attributes:
-        causal_graph: The :class:`~shapiq.causal.CausalGraph` defining the causal
+        causal_graph: The :class:`~shapiq.causal.OrderingGraph` defining the causal
             structure via ordering and confounding information.
         sampling_method: The sampling backend to use.
 
@@ -72,7 +72,7 @@ class CausalImputer(GaussianImputer):
     See Also:
         - :class:`~shapiq.imputer.GaussianImputer`: The parent class.
         - :class:`~shapiq.imputer.GaussianCopulaImputer`: Copula-based imputer.
-        - :class:`~shapiq.causal.CausalGraph`: The causal graph structure.
+        - :class:`~shapiq.causal.OrderingGraph`: The ordering-based causal graph structure.
 
     References:
         Heskes, T., Sijben, E., Bucur, I. G., & Claassen, T. (2020).
@@ -80,7 +80,7 @@ class CausalImputer(GaussianImputer):
         Predictions of Complex Models. NeurIPS 2020.
     """
 
-    causal_graph: CausalGraph
+    causal_graph: OrderingGraph
     """The causal graph defining ordering and confounding."""
     
     sampling_method: SamplingMethod
@@ -178,7 +178,7 @@ class CausalImputer(GaussianImputer):
         if confounding is None:
             confounding = [False] * len(ordering)
             
-        self.causal_graph = CausalGraph(ordering, confounding)
+        self.causal_graph = OrderingGraph(ordering, confounding)
         self._rng = np.random.default_rng(random_state)
         
         # Initialize method-specific data structures

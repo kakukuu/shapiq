@@ -1,5 +1,10 @@
-"""Causal graph structures for Causal SHAP."""
+﻿"""Causal graph structures for causal Shapley value computation."""
 
-from .graph import CausalGraph
+from .dag_graph import DAGGraph
+from .ordering_graph import CausalGraph, OrderingGraph
 
-__all__ = ["CausalGraph"]
+__all__ = [
+    "DAGGraph",
+    "OrderingGraph",
+    "CausalGraph",  # Backward compatibility alias
+]
