@@ -87,11 +87,10 @@ class DoCausalImputer(Imputer):
         *,
         confounding_pairs: set[tuple[int, int]] | None = None,
         method: EstimationMethod = "dml",
-        cross_fitting: bool = True,
+        cross_fitting: bool = False,
         sample_size: int = 100,
         random_state: int | None = None,
         categorical_features: list[int] | None = None,
-        y_data: np.ndarray | None = None,
         **kwargs,
     ) -> None:
         """Initialize the DoCausalImputer.
@@ -123,7 +122,7 @@ class DoCausalImputer(Imputer):
                 - ``"reg"``: Regression/plug-in estimator only.
 
             cross_fitting: Whether to use 2-fold cross-fitting for DML estimation.
-                Reduces bias but doubles computation. Defaults to ``True``.
+                Reduces bias but doubles computation. Defaults to ``False``.
 
             sample_size: Not directly used by DoCausalImputer but kept for
                 interface compatibility.
@@ -132,13 +131,6 @@ class DoCausalImputer(Imputer):
 
             categorical_features: List of indices of categorical features.
                 These will use classification models for conditional probability.
-
-            y_data: Optional array of observed outcome values Y. If provided,
-                uses real Y instead of model predictions f(X) for DML/IPW
-                computation. This is needed for faithfully computing causal
-                contributions as defined in the original paper (Jung et al.,
-                2022). If ``None``, uses ``model.predict(data)`` (explains the
-                model rather than the data generating process).
 
             **kwargs: Additional keyword arguments passed to the parent class.
         """
@@ -151,16 +143,6 @@ class DoCausalImputer(Imputer):
             random_state=random_state,
             **kwargs,
         )
-
-        # Auto-detect binary (categorical) features from data when not explicitly provided
-        if not self._cat_features:
-            auto_cat = []
-            for i in range(self.n_features):
-                n_unique = len(np.unique(data[:, i]))
-                if n_unique <= 2:
-                    auto_cat.append(i)
-            if auto_cat:
-                self._cat_features = auto_cat
 
         # Validate estimation method
         valid_methods = ("dml", "ipw", "reg")
@@ -178,14 +160,13 @@ class DoCausalImputer(Imputer):
 
         self.method = method
         self.cross_fitting = cross_fitting
-        self._y_data = y_data
 
         # Expose some DAG properties for convenience
         self.dag_edges = dag_edges
         self.confounding_pairs = self.dag.confounding_pairs
         self.topo_order = self.dag.topo_order
 
-        # Pre-train conditional probability models P(V_i | pre(V_i) ∪ confounders(V_i))
+        # Pre-train conditional probability models P(V_i | pre(V_i))
         self._cond_prob_models: dict = {}
         self._train_conditional_models()
 
@@ -194,31 +175,6 @@ class DoCausalImputer(Imputer):
 
         # Calculate empty prediction
         self.empty_prediction = self._calc_empty_prediction()
-
-    @staticmethod
-    def confounding_group(*indices: int) -> set[tuple[int, int]]:
-        """Expand a group of confounded variable indices into all pairwise tuples.
-
-        Convenience wrapper around :meth:`DAGGraph.confounding_group
-        <shapiq.causal.DAGGraph.confounding_group>`. Use this to build the
-        ``confounding_pairs`` argument without importing ``DAGGraph`` directly.
-
-        Args:
-            *indices: Variable indices that share an unobserved common cause.
-
-        Returns:
-            Set of ``(i, j)`` pairs (with ``i < j``).
-
-        Example:
-            >>> DoCausalImputer.confounding_group(7, 8, 9)
-            {(7, 8), (7, 9), (8, 9)}
-            >>> # Combine multiple groups with set union
-            >>> pairs = (
-            ...     DoCausalImputer.confounding_group(7, 8, 9)
-            ...     | DoCausalImputer.confounding_group(4, 5)
-            ... )
-        """
-        return DAGGraph.confounding_group(*indices)
 
     def _get_parents(self, node: int) -> list[int]:
         """Get parents of a node from DAG.
@@ -253,48 +209,17 @@ class DoCausalImputer(Imputer):
         """
         return self.dag.sort_by_topo(S)
 
-    def _get_conditioning_set(self, var_idx: int, topo_idx: int) -> list[int]:
-        """Get conditioning set for P(V_i | ...).
-
-        Returns topological predecessors pre(V_i), extended with any confounded
-        variables not already in pre(V_i). This satisfies the back-door criterion:
-        conditioning on a confounded partner blocks the spurious path through
-        the unobserved common cause.
-
-        For non-confounded DAGs, this is equivalent to pre(V_i) only.
-
-        Args:
-            var_idx: The variable index.
-            topo_idx: Position of var_idx in topological order.
-
-        Returns:
-            List of feature indices to condition on.
-        """
-        cond_set = list(self.topo_order[:topo_idx])
-        # Add confounders not already in the conditioning set
-        for pair in self.confounding_pairs:
-            if var_idx in pair:
-                other = pair[0] if pair[1] == var_idx else pair[1]
-                if other not in cond_set:
-                    cond_set.append(other)
-        return cond_set
-
     def _train_conditional_models(self) -> None:
-        """Train conditional probability models P(V_i | pre(V_i) ∪ confounders(V_i)).
+        """Train conditional probability models P(V_i | pre(V_i)) for all variables.
 
         Uses GradientBoosting for regression/classification depending on whether
-        the variable is categorical. The conditioning set includes both
-        topological predecessors and confounded variables to block backdoor
-        paths through unobserved common causes.
+        the variable is categorical.
         """
         from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
 
         for idx, var_idx in enumerate(self.topo_order):
-            # Get conditioning set: pre(V_i) ∪ confounders(V_i)
-            cond_indices = self._get_conditioning_set(var_idx, idx)
-
-            if not cond_indices:
-                # No conditioning variables: compute marginal distribution
+            if idx == 0:
+                # First variable: compute marginal distribution
                 values = self.data[:, var_idx]
                 unique_vals = np.unique(values)
                 probs = np.array([np.mean(values == v) for v in unique_vals])
@@ -304,23 +229,12 @@ class DoCausalImputer(Imputer):
                     "probs": probs,
                 }
             else:
-                # Variables with conditioning set: train conditional model
-                pre_indices = cond_indices
+                # Variables with predecessors: train conditional model
+                pre_indices = self.topo_order[:idx]
                 X_pre = self.data[:, pre_indices]
                 y_var = self.data[:, var_idx]
 
                 if var_idx in self._cat_features:
-                    # Check if y_var has at least 2 classes
-                    unique_classes = np.unique(y_var)
-                    if len(unique_classes) < 2:
-                        # Fall back to marginal when only 1 class
-                        probs = np.array([np.mean(y_var == v) for v in unique_classes])
-                        self._cond_prob_models[var_idx] = {
-                            "type": "marginal",
-                            "unique": unique_classes,
-                            "probs": probs,
-                        }
-                        continue
                     model = GradientBoostingClassifier(
                         n_estimators=50,
                         max_depth=3,
@@ -349,17 +263,12 @@ class DoCausalImputer(Imputer):
         self,
         S: list[int],
         X_eval: np.ndarray,
-        for_omega: bool = False,
     ) -> dict[int, np.ndarray]:
-        """Estimate conditional probabilities P(V_i | cond_set) for variables in S.
+        """Estimate conditional probabilities P(V_i | pre(V_i)) for variables in S.
 
         Args:
             S: Subset of variable indices to estimate probabilities for.
             X_eval: Data to evaluate probabilities on, shape (n_samples, n_features).
-            for_omega: If True, use only topological predecessors for conditioning
-                (no confounders), giving the correct chain factorization for IPW
-                weights. Models are retrained at runtime when the pre-trained
-                conditioning set includes confounders not in pre(V_i).
 
         Returns:
             Dictionary mapping variable index to array of probability estimates.
@@ -369,22 +278,6 @@ class DoCausalImputer(Imputer):
 
         for var_idx in S_sorted:
             model_info = self._cond_prob_models[var_idx]
-
-            # For omega: retrain if pre-trained conditioning includes confounders
-            if for_omega:
-                topo_idx = list(self.topo_order).index(var_idx)
-                omega_cond = list(self.topo_order[:topo_idx])
-                pretrained_cond = model_info.get("pre_indices")
-                needs_retrain = False
-                if pretrained_cond is not None:
-                    needs_retrain = sorted(omega_cond) != sorted(pretrained_cond)
-                elif len(omega_cond) > 0:
-                    needs_retrain = True
-                if needs_retrain:
-                    eval_probs[var_idx] = self._retrain_cond_prob(
-                        var_idx, omega_cond, X_eval
-                    )
-                    continue
 
             if model_info["type"] == "marginal":
                 # Marginal probability
@@ -432,78 +325,6 @@ class DoCausalImputer(Imputer):
 
         return eval_probs
 
-    def _retrain_cond_prob(
-        self,
-        var_idx: int,
-        cond_indices: list[int],
-        X_eval: np.ndarray,
-    ) -> np.ndarray:
-        """Retrain and evaluate P(V_i | cond_set) with a specific conditioning set.
-
-        Used by ``_estimate_cond_prob(for_omega=True)`` when the pre-trained model's
-        conditioning set differs from the omega-correct one (topo predecessors only).
-
-        Args:
-            var_idx: The variable index.
-            cond_indices: The correct conditioning set (topo predecessors only).
-            X_eval: Data to evaluate probabilities on.
-
-        Returns:
-            Array of probability estimates for var_idx.
-        """
-        from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
-
-        if not cond_indices:
-            # Marginal distribution
-            train_values = self.data[:, var_idx]
-            unique_vals = np.unique(train_values)
-            probs = np.array([np.mean(train_values == v) for v in unique_vals])
-            probs_map = dict(zip(unique_vals, probs))
-            default_prob = np.mean(probs)
-            eval_values = X_eval[:, var_idx]
-            return np.array([probs_map.get(v, default_prob) for v in eval_values])
-
-        X_pre_train = self.data[:, cond_indices]
-        y_var_train = self.data[:, var_idx]
-        X_pre_eval = X_eval[:, cond_indices]
-
-        if var_idx in self._cat_features:
-            unique_classes = np.unique(y_var_train)
-            if len(unique_classes) < 2:
-                probs = np.array([np.mean(y_var_train == v) for v in unique_classes])
-                probs_map = dict(zip(unique_classes, probs))
-                default_prob = np.mean(probs)
-                return np.array([
-                    probs_map.get(v, default_prob) for v in X_eval[:, var_idx]
-                ])
-            model = GradientBoostingClassifier(
-                n_estimators=50, max_depth=3, random_state=self.random_state,
-            )
-            model.fit(X_pre_train, y_var_train)
-            proba = model.predict_proba(X_pre_eval)
-            classes = model.classes_
-            eval_values = X_eval[:, var_idx]
-            prob_array = np.zeros(len(eval_values))
-            for i, v in enumerate(eval_values):
-                if v in classes:
-                    class_idx = list(classes).index(v)
-                    prob_array[i] = proba[i, class_idx]
-                else:
-                    prob_array[i] = 1.0 / len(classes)
-            return prob_array
-        else:
-            model = GradientBoostingRegressor(
-                n_estimators=50, max_depth=3, random_state=self.random_state,
-            )
-            model.fit(X_pre_train, y_var_train)
-            predictions = model.predict(X_pre_eval)
-            residuals = X_eval[:, var_idx] - predictions
-            sigma = np.std(residuals) + self.EPS
-            from scipy.stats import norm
-
-            prob_array = norm.pdf(X_eval[:, var_idx], loc=predictions, scale=sigma)
-            return prob_array + self.EPS
-
     def _construct_omega(
         self,
         S: list[int],
@@ -512,15 +333,6 @@ class DoCausalImputer(Imputer):
         cond_probs: dict[int, np.ndarray],
     ) -> dict[int, np.ndarray]:
         """Construct IPW weights ω_S = ∏_{i∈S} I(V_i=v_i) / P(V_i | pre(V_i)).
-
-        The cumulative IPW product is always updated for every S-element
-        (to maintain the correct running product). The omega[k] entry is
-        only stored when Ck is non-empty, since the DML correction term
-        Δ_k = ω_k(θ_{k,1} - θ_{k,2}) is zero when Ck = ∅.
-
-        For the last element in S, Ck always includes the implicit outcome
-        variable Y (which is not in topo_order but follows all features),
-        so its correction is always computed.
 
         Args:
             S: Subset of variables being intervened on.
@@ -538,9 +350,9 @@ class DoCausalImputer(Imputer):
         prev_omega = np.ones(n_samples)
 
         for idx, k in enumerate(S_sorted):
-            # Determine Ck: non-S variables between k and next S-element in topo
-            is_last = idx == len(S_sorted) - 1
-            if is_last:
+            # Check if there are variables between k and next element in S
+            if idx == len(S_sorted) - 1:
+                # Last element: check remaining variables
                 k_topo_idx = self.topo_order.index(k)
                 Ck = self.topo_order[k_topo_idx + 1:]
             else:
@@ -549,6 +361,9 @@ class DoCausalImputer(Imputer):
                 k_next_topo_idx = self.topo_order.index(k_next)
                 Ck = self.topo_order[k_topo_idx + 1:k_next_topo_idx]
 
+            if not Ck:
+                continue
+
             # Get P(V_k | pre(V_k))
             pred_k = cond_probs[k]
 
@@ -556,7 +371,9 @@ class DoCausalImputer(Imputer):
             v_k = x_explain[k]
             V_k = X_eval[:, k]
 
+            # For continuous variables, use soft indicator
             if k not in self._cat_features:
+                # Gaussian kernel as soft indicator
                 sigma = np.std(self.data[:, k]) + self.EPS
                 indicator = np.exp(-0.5 * ((V_k - v_k) / sigma) ** 2)
             else:
@@ -566,16 +383,12 @@ class DoCausalImputer(Imputer):
             weight = indicator / (pred_k + self.EPS)
             weight = np.clip(weight, 0, self.CLIP_VALUE)
 
-            # ALWAYS update cumulative omega product (state propagation)
+            # Cumulative weight
             new_omega = weight * prev_omega
             new_omega = np.clip(new_omega, 0, self.CLIP_VALUE)
-            prev_omega = new_omega
 
-            # Store omega[k] for the DML correction term only when needed:
-            # - Last element: always (implicit Y makes Ck non-empty)
-            # - Intermediate: only when Ck is non-empty
-            if is_last or Ck:
-                omega[k] = new_omega
+            omega[k] = new_omega
+            prev_omega = new_omega
 
         return omega
 
@@ -590,18 +403,8 @@ class DoCausalImputer(Imputer):
     ) -> tuple[dict[int, np.ndarray], dict[int, np.ndarray]]:
         """Construct conditional expectations θ_{k,1} and θ_{k,2} for k ∈ S.
 
-        The regression + intervention step is ALWAYS performed for every
-        S-element to propagate the do-intervention through the telescoping
-        decomposition. The correction components (θ_{k,1}, θ_{k,2}) are
-        only stored when they contribute a non-zero correction:
-
-        - Last S-element (first in reverse): always stored (implicit Y).
-        - Intermediate: stored only when Ck is non-empty.
-
-        When Ck is empty between consecutive S-elements, the correction
-        Δ_k = ω_k(θ_{k,1} - θ_{k,2}) = 0 mathematically, but the
-        regression step is still needed to correctly propagate the
-        intervention value v_k into θ_{0,1}.
+        θ_{k,1} = E[Y | v_{<k}, V_{≥k}]  (with intervention up to k-1)
+        θ_{k,2} = E[Y | V_k, pre(V_k)]   (without intervention at k)
 
         Args:
             S: Subset of variables being intervened on.
@@ -627,9 +430,8 @@ class DoCausalImputer(Imputer):
         theta_k1_test = y_test.copy()
 
         for idx, k in enumerate(S_sorted_reverse):
-            # Determine Ck: non-S variables between k and next element
-            is_first_in_reverse = idx == 0  # = last element in S
-            if is_first_in_reverse:
+            # Check Ck: variables between k and next element in S_reverse
+            if idx == 0:
                 k_topo_idx = self.topo_order.index(k)
                 Ck = self.topo_order[k_topo_idx + 1:]
             else:
@@ -638,16 +440,14 @@ class DoCausalImputer(Imputer):
                 k_prev_topo_idx = self.topo_order.index(k_prev)
                 Ck = self.topo_order[k_topo_idx + 1:k_prev_topo_idx]
 
-            # Store correction components only when needed
-            store_correction = is_first_in_reverse or bool(Ck)
+            if not Ck:
+                continue
 
-            if store_correction:
-                theta_1[k] = theta_k1_test.copy()
+            theta_1[k] = theta_k1_test.copy()
 
-            # ALWAYS do regression + intervention (state propagation)
-            # col_choice = conditioning_set ∪ {k}, with k LAST for intervention
+            # Get columns: V_k and all predecessors
             k_topo_idx = self.topo_order.index(k)
-            col_choice = self._get_conditioning_set(k, k_topo_idx) + [k]
+            col_choice = self.topo_order[:k_topo_idx + 1]
 
             X_choice_train = X_train[:, col_choice]
             X_choice_test = X_test[:, col_choice]
@@ -660,10 +460,11 @@ class DoCausalImputer(Imputer):
             )
             model.fit(X_choice_train, theta_k1_train)
 
-            if store_correction:
-                theta_2[k] = model.predict(X_choice_test)
+            theta_k2_test = model.predict(X_choice_test)
+            theta_2[k] = theta_k2_test
 
-            # Propagate: set V_k to intervention value v_k
+            # Compute θ_{k-1,1} = E[θ_{k,1} | v_k, pre(V_k)]
+            # Replace V_k with intervention value v_k
             X_choice_test_intervened = X_choice_test.copy()
             X_choice_train_intervened = X_choice_train.copy()
             X_choice_test_intervened[:, -1] = x_explain[k]
@@ -723,7 +524,7 @@ class DoCausalImputer(Imputer):
         Returns:
             IPW estimate.
         """
-        cond_probs = self._estimate_cond_prob(S, X_eval, for_omega=True)
+        cond_probs = self._estimate_cond_prob(S, X_eval)
         omega = self._construct_omega(S, x_explain, X_eval, cond_probs)
 
         if not omega:
@@ -740,13 +541,8 @@ class DoCausalImputer(Imputer):
         X_train: np.ndarray,
         y_train: np.ndarray,
         X_test: np.ndarray,
-        y_test: np.ndarray,
     ) -> float:
         """Compute regression/plug-in estimate of E[Y | do(X_S = x_S)].
-
-        Uses iterated regression via the telescoping decomposition (theta_{0,1}),
-        which correctly handles interventions through the causal DAG structure.
-        This is equivalent to code-additional's computePI_S using theta_1[-1].
 
         Args:
             S: Subset of intervened variables.
@@ -754,13 +550,27 @@ class DoCausalImputer(Imputer):
             X_train: Training data.
             y_train: Training labels.
             X_test: Test data for evaluation.
-            y_test: Test labels for evaluation.
 
         Returns:
             Regression estimate.
         """
-        theta_1, _ = self._construct_theta(S, x_explain, X_train, y_train, X_test, y_test)
-        return float(np.mean(theta_1[-1]))
+        from sklearn.ensemble import GradientBoostingRegressor
+
+        # Create intervened data
+        X_intervened = X_test.copy()
+        for k in S:
+            X_intervened[:, k] = x_explain[k]
+
+        # Train outcome model
+        model = GradientBoostingRegressor(
+            n_estimators=50,
+            max_depth=3,
+            random_state=self.random_state,
+        )
+        model.fit(X_train, y_train)
+
+        predictions = model.predict(X_intervened)
+        return float(np.mean(predictions))
 
     def _compute_do_effect(self, S: list[int], x_explain: np.ndarray) -> float:
         """Compute E[Y | do(X_S = x_S)] using the specified method.
@@ -791,23 +601,13 @@ class DoCausalImputer(Imputer):
         self._cache[cache_key] = result
         return result
 
-    def _get_y_data(self, X: np.ndarray) -> np.ndarray:
-        """Get outcome values: real Y if provided, otherwise model predictions."""
-        if self._y_data is not None:
-            # If X is a subset of self.data (same length), use stored y_data
-            if len(X) == len(self._y_data):
-                return self._y_data.copy()
-            # Otherwise fall back to model predictions
-            return self.predict(X)
-        return self.predict(X)
-
     def _compute_do_effect_single(self, S: list[int], x_explain: np.ndarray) -> float:
         """Compute do-effect without cross-fitting."""
         X_data = self.data
-        y_data = self._get_y_data(X_data)
+        y_data = self.predict(X_data)
 
         if self.method == "dml":
-            cond_probs = self._estimate_cond_prob(S, X_data, for_omega=True)
+            cond_probs = self._estimate_cond_prob(S, X_data)
             omega = self._construct_omega(S, x_explain, X_data, cond_probs)
             theta_1, theta_2 = self._construct_theta(
                 S, x_explain, X_data, y_data, X_data, y_data
@@ -818,7 +618,7 @@ class DoCausalImputer(Imputer):
             return self._compute_ipw(S, x_explain, X_data, y_data)
 
         else:  # reg
-            return self._compute_reg(S, x_explain, X_data, y_data, X_data, y_data)
+            return self._compute_reg(S, x_explain, X_data, y_data, X_data)
 
     def _compute_do_effect_cross_fitting(
         self, S: list[int], x_explain: np.ndarray
@@ -831,17 +631,13 @@ class DoCausalImputer(Imputer):
 
         fold1_idx, fold2_idx = indices[:mid], indices[mid:]
         X1, X2 = self.data[fold1_idx], self.data[fold2_idx]
-        if self._y_data is not None:
-            y1 = self._y_data[fold1_idx].copy()
-            y2 = self._y_data[fold2_idx].copy()
-        else:
-            y1 = self.predict(X1)
-            y2 = self.predict(X2)
+        y1 = self.predict(X1)
+        y2 = self.predict(X2)
 
         results = []
         for X_train, y_train, X_test, y_test in [(X1, y1, X2, y2), (X2, y2, X1, y1)]:
             if self.method == "dml":
-                cond_probs = self._estimate_cond_prob(S, X_test, for_omega=True)
+                cond_probs = self._estimate_cond_prob(S, X_test)
                 omega = self._construct_omega(S, x_explain, X_test, cond_probs)
                 theta_1, theta_2 = self._construct_theta(
                     S, x_explain, X_train, y_train, X_test, y_test
@@ -852,7 +648,7 @@ class DoCausalImputer(Imputer):
                 results.append(self._compute_ipw(S, x_explain, X_test, y_test))
 
             else:  # reg
-                results.append(self._compute_reg(S, x_explain, X_train, y_train, X_test, y_test))
+                results.append(self._compute_reg(S, x_explain, X_train, y_train, X_test))
 
         return float(np.mean(results))
 
@@ -862,8 +658,6 @@ class DoCausalImputer(Imputer):
 
     def _calc_empty_prediction(self) -> float:
         """Calculate E[Y] as the empty prediction baseline."""
-        if self._y_data is not None:
-            return float(np.mean(self._y_data))
         return float(np.mean(self.predict(self.data)))
 
     def value_function(self, coalitions: npt.NDArray[np.bool_]) -> npt.NDArray[np.float64]:
