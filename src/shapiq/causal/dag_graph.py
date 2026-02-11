@@ -282,6 +282,36 @@ class DAGGraph:
 
         return descendants
 
+    @staticmethod
+    def confounding_group(*indices: int) -> set[tuple[int, int]]:
+        """Expand a group of confounded variables into all pairwise tuples.
+
+        When multiple observed variables share a single unobserved common
+        cause (e.g., ``atmospheric_state`` jointly drives ``temp``,
+        ``humidity``, and ``windspeed``), the ADMG representation requires
+        listing every pairwise bidirectional edge.  This helper generates
+        those pairs from the group, so users need not enumerate them manually.
+
+        Args:
+            *indices: Variable indices that share an unobserved common cause.
+
+        Returns:
+            Set of ``(min, max)``-ordered pairs suitable for the
+            ``confounding_pairs`` parameter.
+
+        Example:
+            >>> DAGGraph.confounding_group(7, 8, 9)
+            {(7, 8), (7, 9), (8, 9)}
+            >>> # Combine multiple groups with set union:
+            >>> pairs = (
+            ...     DAGGraph.confounding_group(7, 8, 9)   # ← atmospheric_state
+            ...     | DAGGraph.confounding_group(4, 5)     # ← calendar structure
+            ... )
+        """
+        from itertools import combinations
+
+        return set(combinations(sorted(indices), 2))
+
     @classmethod
     def from_ordering(
         cls,

@@ -176,6 +176,31 @@ class DoCausalImputer(Imputer):
         # Calculate empty prediction
         self.empty_prediction = self._calc_empty_prediction()
 
+    @staticmethod
+    def confounding_group(*indices: int) -> set[tuple[int, int]]:
+        """Expand a group of confounded variable indices into all pairwise tuples.
+
+        Convenience wrapper around :meth:`DAGGraph.confounding_group
+        <shapiq.causal.DAGGraph.confounding_group>`. Use this to build the
+        ``confounding_pairs`` argument without importing ``DAGGraph`` directly.
+
+        Args:
+            *indices: Variable indices that share an unobserved common cause.
+
+        Returns:
+            Set of ``(i, j)`` pairs (with ``i < j``).
+
+        Example:
+            >>> DoCausalImputer.confounding_group(7, 8, 9)
+            {(7, 8), (7, 9), (8, 9)}
+            >>> # Combine multiple groups with set union
+            >>> pairs = (
+            ...     DoCausalImputer.confounding_group(7, 8, 9)
+            ...     | DoCausalImputer.confounding_group(4, 5)
+            ... )
+        """
+        return DAGGraph.confounding_group(*indices)
+
     def _get_parents(self, node: int) -> list[int]:
         """Get parents of a node from DAG.
 
