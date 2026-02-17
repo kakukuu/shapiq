@@ -152,6 +152,16 @@ class DoCausalImputer(Imputer):
             **kwargs,
         )
 
+        # Auto-detect binary (categorical) features from data when not explicitly provided
+        if not self._cat_features:
+            auto_cat = []
+            for i in range(self.n_features):
+                n_unique = len(np.unique(data[:, i]))
+                if n_unique <= 2:
+                    auto_cat.append(i)
+            if auto_cat:
+                self._cat_features = auto_cat
+
         # Validate estimation method
         valid_methods = ("dml", "ipw", "reg")
         if method not in valid_methods:
@@ -339,12 +349,17 @@ class DoCausalImputer(Imputer):
         self,
         S: list[int],
         X_eval: np.ndarray,
+        for_omega: bool = False,
     ) -> dict[int, np.ndarray]:
-        """Estimate conditional probabilities P(V_i | pre(V_i)) for variables in S.
+        """Estimate conditional probabilities P(V_i | cond_set) for variables in S.
 
         Args:
             S: Subset of variable indices to estimate probabilities for.
             X_eval: Data to evaluate probabilities on, shape (n_samples, n_features).
+            for_omega: If True, use only topological predecessors for conditioning
+                (no confounders), giving the correct chain factorization for IPW
+                weights. Models are retrained at runtime when the pre-trained
+                conditioning set includes confounders not in pre(V_i).
 
         Returns:
             Dictionary mapping variable index to array of probability estimates.
@@ -354,6 +369,22 @@ class DoCausalImputer(Imputer):
 
         for var_idx in S_sorted:
             model_info = self._cond_prob_models[var_idx]
+
+            # For omega: retrain if pre-trained conditioning includes confounders
+            if for_omega:
+                topo_idx = list(self.topo_order).index(var_idx)
+                omega_cond = list(self.topo_order[:topo_idx])
+                pretrained_cond = model_info.get("pre_indices")
+                needs_retrain = False
+                if pretrained_cond is not None:
+                    needs_retrain = sorted(omega_cond) != sorted(pretrained_cond)
+                elif len(omega_cond) > 0:
+                    needs_retrain = True
+                if needs_retrain:
+                    eval_probs[var_idx] = self._retrain_cond_prob(
+                        var_idx, omega_cond, X_eval
+                    )
+                    continue
 
             if model_info["type"] == "marginal":
                 # Marginal probability
@@ -400,6 +431,78 @@ class DoCausalImputer(Imputer):
                 eval_probs[var_idx] = prob_array + self.EPS
 
         return eval_probs
+
+    def _retrain_cond_prob(
+        self,
+        var_idx: int,
+        cond_indices: list[int],
+        X_eval: np.ndarray,
+    ) -> np.ndarray:
+        """Retrain and evaluate P(V_i | cond_set) with a specific conditioning set.
+
+        Used by ``_estimate_cond_prob(for_omega=True)`` when the pre-trained model's
+        conditioning set differs from the omega-correct one (topo predecessors only).
+
+        Args:
+            var_idx: The variable index.
+            cond_indices: The correct conditioning set (topo predecessors only).
+            X_eval: Data to evaluate probabilities on.
+
+        Returns:
+            Array of probability estimates for var_idx.
+        """
+        from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
+
+        if not cond_indices:
+            # Marginal distribution
+            train_values = self.data[:, var_idx]
+            unique_vals = np.unique(train_values)
+            probs = np.array([np.mean(train_values == v) for v in unique_vals])
+            probs_map = dict(zip(unique_vals, probs))
+            default_prob = np.mean(probs)
+            eval_values = X_eval[:, var_idx]
+            return np.array([probs_map.get(v, default_prob) for v in eval_values])
+
+        X_pre_train = self.data[:, cond_indices]
+        y_var_train = self.data[:, var_idx]
+        X_pre_eval = X_eval[:, cond_indices]
+
+        if var_idx in self._cat_features:
+            unique_classes = np.unique(y_var_train)
+            if len(unique_classes) < 2:
+                probs = np.array([np.mean(y_var_train == v) for v in unique_classes])
+                probs_map = dict(zip(unique_classes, probs))
+                default_prob = np.mean(probs)
+                return np.array([
+                    probs_map.get(v, default_prob) for v in X_eval[:, var_idx]
+                ])
+            model = GradientBoostingClassifier(
+                n_estimators=50, max_depth=3, random_state=self.random_state,
+            )
+            model.fit(X_pre_train, y_var_train)
+            proba = model.predict_proba(X_pre_eval)
+            classes = model.classes_
+            eval_values = X_eval[:, var_idx]
+            prob_array = np.zeros(len(eval_values))
+            for i, v in enumerate(eval_values):
+                if v in classes:
+                    class_idx = list(classes).index(v)
+                    prob_array[i] = proba[i, class_idx]
+                else:
+                    prob_array[i] = 1.0 / len(classes)
+            return prob_array
+        else:
+            model = GradientBoostingRegressor(
+                n_estimators=50, max_depth=3, random_state=self.random_state,
+            )
+            model.fit(X_pre_train, y_var_train)
+            predictions = model.predict(X_pre_eval)
+            residuals = X_eval[:, var_idx] - predictions
+            sigma = np.std(residuals) + self.EPS
+            from scipy.stats import norm
+
+            prob_array = norm.pdf(X_eval[:, var_idx], loc=predictions, scale=sigma)
+            return prob_array + self.EPS
 
     def _construct_omega(
         self,
@@ -620,7 +723,7 @@ class DoCausalImputer(Imputer):
         Returns:
             IPW estimate.
         """
-        cond_probs = self._estimate_cond_prob(S, X_eval)
+        cond_probs = self._estimate_cond_prob(S, X_eval, for_omega=True)
         omega = self._construct_omega(S, x_explain, X_eval, cond_probs)
 
         if not omega:
@@ -637,8 +740,13 @@ class DoCausalImputer(Imputer):
         X_train: np.ndarray,
         y_train: np.ndarray,
         X_test: np.ndarray,
+        y_test: np.ndarray,
     ) -> float:
         """Compute regression/plug-in estimate of E[Y | do(X_S = x_S)].
+
+        Uses iterated regression via the telescoping decomposition (theta_{0,1}),
+        which correctly handles interventions through the causal DAG structure.
+        This is equivalent to code-additional's computePI_S using theta_1[-1].
 
         Args:
             S: Subset of intervened variables.
@@ -646,27 +754,13 @@ class DoCausalImputer(Imputer):
             X_train: Training data.
             y_train: Training labels.
             X_test: Test data for evaluation.
+            y_test: Test labels for evaluation.
 
         Returns:
             Regression estimate.
         """
-        from sklearn.ensemble import GradientBoostingRegressor
-
-        # Create intervened data
-        X_intervened = X_test.copy()
-        for k in S:
-            X_intervened[:, k] = x_explain[k]
-
-        # Train outcome model
-        model = GradientBoostingRegressor(
-            n_estimators=50,
-            max_depth=3,
-            random_state=self.random_state,
-        )
-        model.fit(X_train, y_train)
-
-        predictions = model.predict(X_intervened)
-        return float(np.mean(predictions))
+        theta_1, _ = self._construct_theta(S, x_explain, X_train, y_train, X_test, y_test)
+        return float(np.mean(theta_1[-1]))
 
     def _compute_do_effect(self, S: list[int], x_explain: np.ndarray) -> float:
         """Compute E[Y | do(X_S = x_S)] using the specified method.
@@ -713,7 +807,7 @@ class DoCausalImputer(Imputer):
         y_data = self._get_y_data(X_data)
 
         if self.method == "dml":
-            cond_probs = self._estimate_cond_prob(S, X_data)
+            cond_probs = self._estimate_cond_prob(S, X_data, for_omega=True)
             omega = self._construct_omega(S, x_explain, X_data, cond_probs)
             theta_1, theta_2 = self._construct_theta(
                 S, x_explain, X_data, y_data, X_data, y_data
@@ -724,7 +818,7 @@ class DoCausalImputer(Imputer):
             return self._compute_ipw(S, x_explain, X_data, y_data)
 
         else:  # reg
-            return self._compute_reg(S, x_explain, X_data, y_data, X_data)
+            return self._compute_reg(S, x_explain, X_data, y_data, X_data, y_data)
 
     def _compute_do_effect_cross_fitting(
         self, S: list[int], x_explain: np.ndarray
@@ -747,7 +841,7 @@ class DoCausalImputer(Imputer):
         results = []
         for X_train, y_train, X_test, y_test in [(X1, y1, X2, y2), (X2, y2, X1, y1)]:
             if self.method == "dml":
-                cond_probs = self._estimate_cond_prob(S, X_test)
+                cond_probs = self._estimate_cond_prob(S, X_test, for_omega=True)
                 omega = self._construct_omega(S, x_explain, X_test, cond_probs)
                 theta_1, theta_2 = self._construct_theta(
                     S, x_explain, X_train, y_train, X_test, y_test
@@ -758,7 +852,7 @@ class DoCausalImputer(Imputer):
                 results.append(self._compute_ipw(S, x_explain, X_test, y_test))
 
             else:  # reg
-                results.append(self._compute_reg(S, x_explain, X_train, y_train, X_test))
+                results.append(self._compute_reg(S, x_explain, X_train, y_train, X_test, y_test))
 
         return float(np.mean(results))
 
