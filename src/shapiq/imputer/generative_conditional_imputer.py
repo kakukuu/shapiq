@@ -130,6 +130,8 @@ class GenerativeConditionalImputer(Imputer):
             coalitions_matrix.append(coalition_sampler.coalitions_matrix)
         coalitions_matrix = np.concatenate(coalitions_matrix, axis=0)
         X_masked = X_tiled.copy()
+        # Convert to float to allow NaN assignment (NaN cannot be assigned to integer arrays)
+        X_masked = X_masked.astype(np.float64)
         try:
             X_masked[coalitions_matrix] = np.nan  # old numpy version
         except AttributeError:  # interim solution since numpy changed

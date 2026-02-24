@@ -7,7 +7,7 @@ from .gaussian_copula_imputer import GaussianCopulaImputer
 from .gaussian_imputer import GaussianImputer
 from .generative_conditional_imputer import GenerativeConditionalImputer
 from .marginal_imputer import MarginalImputer
-from .no_model_causal_imputer import NoModelCausalImputer
+from .no_ml_causal_imputer import NoMLCausalImputer
 from .tabpfn_imputer import TabPFNImputer
 
 __all__ = [
@@ -19,5 +19,5 @@ __all__ = [
     "GaussianCopulaImputer",
     "CausalImputer",
     "DoCausalImputer",
-    "NoModelCausalImputer",
+    "NoMLCausalImputer",
 ]

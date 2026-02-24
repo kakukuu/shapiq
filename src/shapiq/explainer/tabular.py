@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 
 TabularExplainerApproximators = Literal["spex", "montecarlo", "svarm", "permutation", "regression"]
-TabularExplainerImputers = Literal["marginal", "baseline", "conditional", "causal", "do_causal", "no_model_causal"]
+TabularExplainerImputers = Literal["marginal", "baseline", "conditional", "causal", "do_causal", "no_ml_causal"]
 TabularExplainerIndices = ExplainerIndices
 
 
@@ -71,12 +71,12 @@ class TabularExplainer(Explainer):
 
             imputer: Either an :class:`~shapiq.games.imputer.Imputer` as implemented in the
                 :mod:`~shapiq.games.imputer` module, or a literal string from
-                ``["marginal", "baseline", "conditional", "causal", "do_causal", "no_model_causal"]``.
+                ``["marginal", "baseline", "conditional", "causal", "do_causal", "no_ml_causal"]``.
                 Defaults to ``"marginal"``, which initializes the default
                 :class:`~shapiq.games.imputer.marginal_imputer.MarginalImputer` with its default
                 parameters or as provided in ``kwargs``. Use ``"do_causal"`` for interventional
                 do-Shapley values (requires ``dag_edges`` in ``kwargs``). Use
-                ``"no_model_causal"`` for model-free causal Shapley values (requires ``y``
+                ``"no_ml_causal"`` for model-free causal Shapley values (requires ``y``
                 in ``kwargs``; treats Y as the final node in the causal graph).
 
             approximator: An :class:`~shapiq.approximator.Approximator` object to use for the
@@ -117,7 +117,7 @@ class TabularExplainer(Explainer):
             DoCausalImputer,
             GenerativeConditionalImputer,
             MarginalImputer,
-            NoModelCausalImputer,
+            NoMLCausalImputer,
             TabPFNImputer,
         )
 
@@ -174,8 +174,8 @@ class TabularExplainer(Explainer):
                 method=kwargs.pop("method", "dml"),
                 **kwargs,
             )
-        elif imputer == "no_model_causal":
-            _no_model_imputer = NoModelCausalImputer(
+        elif imputer == "no_ml_causal":
+            _no_ml_imputer = NoMLCausalImputer(
                 X=self._data,
                 y=kwargs.pop("y"),
                 ordering=kwargs.pop("ordering", None),
@@ -183,7 +183,7 @@ class TabularExplainer(Explainer):
                 random_state=random_state,
                 **kwargs,
             )
-            self._imputer = _no_model_imputer.as_causal_imputer()
+            self._imputer = _no_ml_imputer.as_causal_imputer()
         elif isinstance(
             imputer,
             MarginalImputer | GenerativeConditionalImputer | BaselineImputer | TabPFNImputer | CausalImputer | DoCausalImputer,
@@ -192,7 +192,7 @@ class TabularExplainer(Explainer):
         else:
             msg = (
                 f"Invalid imputer {imputer}. "
-                f'Must be one of ["marginal", "baseline", "conditional", "causal", "do_causal", "no_model_causal"], '
+                f'Must be one of ["marginal", "baseline", "conditional", "causal", "do_causal", "no_ml_causal"], '
                 f"or a valid Imputer object."
             )
             raise ValueError(msg)

@@ -102,6 +102,8 @@ class CausalImputer(GaussianImputer):
         sample_size: int = 100,
         k_neighbors: int = 10,
         random_state: int | None = None,
+        _model_accepts_gaussian: bool = False,
+        _precomputed_empty_prediction: float | None = None,
         **kwargs,
     ) -> None:
         """Initialize the CausalImputer.
@@ -144,6 +146,15 @@ class CausalImputer(GaussianImputer):
 
             random_state: Random seed for reproducibility.
 
+            _model_accepts_gaussian: Internal flag. When ``True``, the model expects
+                inputs in Gaussian copula space, so ``_sample_causal`` skips the
+                inverse copula transform. Used by ``NoMLCausalImputer.as_causal_imputer()``
+                to eliminate the double copula round-trip.
+
+            _precomputed_empty_prediction: Internal. Pre-computed empty prediction
+                value. When provided, skips the expensive ``calc_empty_prediction()``
+                call during initialization.
+
             **kwargs: Additional keyword arguments passed to the parent class.
         """
         # Skip parent's categorical check by not calling super().__init__ directly
@@ -181,12 +192,19 @@ class CausalImputer(GaussianImputer):
         self.causal_graph = OrderingGraph(ordering, confounding)
         self._rng = np.random.default_rng(random_state)
         
+        # Flag: when True, skip _transform_from_gaussian_full in _sample_causal
+        # because the model already expects Gaussian-space inputs.
+        self._model_accepts_gaussian = _model_accepts_gaussian
+        
         # Initialize method-specific data structures
         self._init_sampling_backend()
         
         # Calculate the empty prediction (model's mean prediction on background data)
         # This is critical for correct SII/Shapley value attribution
-        self.empty_prediction = self.calc_empty_prediction()
+        if _precomputed_empty_prediction is not None:
+            self.empty_prediction = _precomputed_empty_prediction
+        else:
+            self.empty_prediction = self.calc_empty_prediction()
     
     def calc_empty_prediction(self) -> float:
         """Calculate the empty prediction (baseline) for Shapley value computation.
@@ -350,8 +368,9 @@ class CausalImputer(GaussianImputer):
             
             samples[:, to_sample] = new_samples
         
-        # For copula, transform back to original space
-        if self.sampling_method == "copula":
+        # For copula, transform back to original space — but skip if model
+        # already accepts Gaussian-space inputs (e.g., NoMLCausalImputer.predict_gaussian)
+        if self.sampling_method == "copula" and not self._model_accepts_gaussian:
             samples = self._transform_from_gaussian_full(samples)
         
         return samples

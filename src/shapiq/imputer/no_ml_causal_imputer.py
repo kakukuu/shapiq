@@ -1,4 +1,4 @@
-"""No-Model Causal Imputer for model-free Causal SHAP computation."""
+"""No-ML Causal Imputer for model-free Causal SHAP computation."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
 
-class NoModelCausalImputer:
-    """Unified No-Model Causal Imputer with built-in Y estimation.
+class NoMLCausalImputer:
+    """Unified No-ML Causal Imputer with built-in Y estimation.
 
     This class provides a "model-free" approach to Causal SHAP by treating
     Y as the final node in the causal graph and using conditional Gaussian
@@ -54,7 +54,7 @@ class NoModelCausalImputer:
         k_neighbors: int = 10,
         random_state: int | None = None,
     ) -> None:
-        """Initialize the NoModelCausalImputer.
+        """Initialize the NoMLCausalImputer.
         
         Args:
             X: Feature data of shape ``(n_samples, n_features)``.
@@ -171,30 +171,39 @@ class NoModelCausalImputer:
         return norm.ppf(empirical_cdf)
     
     def _transform_point_to_gaussian(self, x: np.ndarray) -> np.ndarray:
-        """Transform a single point's X values to Gaussian space.
+        """Transform points' X values to Gaussian space (vectorized).
         
         Args:
             x: Point of shape (n_features,) or (n_points, n_features).
             
         Returns:
-            Transformed point in Gaussian space.
+            Transformed point(s) in Gaussian space.
         """
         x = np.atleast_2d(x)
         n_points = x.shape[0]
-        result = np.zeros_like(x)
         
-        for i in range(n_points):
-            # Compute empirical CDF for each feature
-            ranks = np.sum(self.X <= x[i], axis=0)
-            empirical_cdf = ranks / self.n_samples
-            empirical_cdf = np.clip(
-                empirical_cdf,
-                self.QUANTILE_CLIP_EPSILON,
-                1 - self.QUANTILE_CLIP_EPSILON
-            )
-            result[i] = norm.ppf(empirical_cdf)
+        # Vectorized: process all points at once using broadcasting
+        # For large batches, chunk to avoid memory issues
+        # x: (n_points, n_features), self.X: (n_samples, n_features)
+        _CHUNK_SIZE = 200
+        if n_points <= _CHUNK_SIZE:
+            # (n_points, n_samples, n_features) boolean -> sum over n_samples axis
+            ranks = np.sum(self.X[None, :, :] <= x[:, None, :], axis=1)  # (n_points, n_features)
+        else:
+            ranks = np.zeros((n_points, x.shape[1]), dtype=np.float64)
+            for start in range(0, n_points, _CHUNK_SIZE):
+                end = min(start + _CHUNK_SIZE, n_points)
+                ranks[start:end] = np.sum(
+                    self.X[None, :, :] <= x[start:end, None, :], axis=1
+                )
         
-        return result
+        empirical_cdf = ranks / self.n_samples
+        empirical_cdf = np.clip(
+            empirical_cdf,
+            self.QUANTILE_CLIP_EPSILON,
+            1 - self.QUANTILE_CLIP_EPSILON
+        )
+        return norm.ppf(empirical_cdf)
     
     def _transform_y_from_gaussian(self, z_y: np.ndarray) -> np.ndarray:
         """Transform Y values from Gaussian space back to original space.
@@ -268,6 +277,32 @@ class NoModelCausalImputer:
             result = self.mu_Y + deviation @ self.beta_Y
         
         return np.atleast_1d(result.squeeze())
+
+    def predict_gaussian(self, X_gaussian: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
+        """Predict Y from X already in Gaussian copula space.
+
+        This avoids the expensive ``_transform_point_to_gaussian`` step when the
+        input is already in Gaussian space (e.g., from ``CausalImputer._sample_causal``).
+        For non-copula methods, this falls back to ``predict()``.
+
+        Args:
+            X_gaussian: Query points already in Gaussian space, of shape
+                ``(n_points, n_features)`` or ``(n_features,)``.
+
+        Returns:
+            Predictions of shape ``(n_points,)`` or ``(1,)`` for single point.
+        """
+        if self.sampling_method != "copula":
+            # For non-copula, X_gaussian is in original space; delegate to predict
+            return self.predict(X_gaussian)
+
+        X_gaussian = np.atleast_2d(X_gaussian)
+        # Conditional expectation in Gaussian space (just a matrix multiply)
+        deviation = X_gaussian - self.mu_X
+        Z_Y = self.mu_Y + deviation @ self.beta_Y
+        # Transform Y back to original space
+        result = self._transform_y_from_gaussian(Z_Y)
+        return np.atleast_1d(result.squeeze())
     
     def _predict_empirical(self, X_query: np.ndarray) -> np.ndarray:
         """KNN-based Y estimation for empirical method.
@@ -305,11 +340,20 @@ class NoModelCausalImputer:
         This ensures consistency between X imputation and Y estimation,
         as both use the same underlying covariance matrix.
         
+        When ``sampling_method="copula"``, this passes ``predict_gaussian``
+        as the model and sets ``_model_accepts_gaussian=True`` so that
+        ``CausalImputer`` skips the redundant inverse copula transform,
+        avoiding a costly Gaussian -> Original -> Gaussian round-trip.
+        
         Returns:
             A CausalImputer configured with the same parameters.
         """
+        # For copula: pass the Gaussian-space predict to avoid double transform
+        use_gaussian = self.sampling_method == "copula"
+        model_fn = self.predict_gaussian if use_gaussian else self.predict
+        
         return CausalImputer(
-            model=self.predict,
+            model=model_fn,
             data=self.X,
             ordering=self.ordering,
             confounding=self.confounding,
@@ -317,6 +361,8 @@ class NoModelCausalImputer:
             sample_size=self.sample_size,
             k_neighbors=self.k_neighbors,
             random_state=self.random_state,
+            _model_accepts_gaussian=use_gaussian,
+            _precomputed_empty_prediction=self._original_y_mean,
         )
     
     def get_regression_info(self) -> dict:
@@ -346,10 +392,10 @@ class NoModelCausalImputer:
             'n_features': self.n_features,
         }
     
-    def fit(self, x: npt.NDArray[np.floating]) -> "NoModelCausalImputer":
+    def fit(self, x: npt.NDArray[np.floating]) -> "NoMLCausalImputer":
         """Fit method for compatibility with shapiq Imputer interface.
         
-        This is a no-op since NoModelCausalImputer doesn't need per-point fitting.
+        This is a no-op since NoMLCausalImputer doesn't need per-point fitting.
         
         Args:
             x: Explanation point (ignored for this imputer).
