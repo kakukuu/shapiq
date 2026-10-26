@@ -56,10 +56,13 @@ from .graph import GraphExplainer
 # imputer classes
 from .imputer import (
     BaselineImputer,
+    CausalImputer,
+    DoCausalImputer,
     GaussianCopulaImputer,
     GaussianImputer,
     GenerativeConditionalImputer,
     MarginalImputer,
+    NoMLCausalImputer,
     TabPFNImputer,
 )
 
@@ -136,6 +139,9 @@ __all__ = [
     "TabPFNImputer",
     "GaussianImputer",
     "GaussianCopulaImputer",
+    "CausalImputer",
+    "DoCausalImputer",
+    "NoMLCausalImputer",
     # plots
     "network_plot",
     "stacked_bar_plot",

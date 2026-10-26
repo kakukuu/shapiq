@@ -140,6 +140,8 @@ class GaussianImputer(Imputer):
         Returns:
             The positive definite covariance matrix.
         """
+        # A single feature produces a scalar covariance, but sampling requires a matrix.
+        cov_mat = np.atleast_2d(cov_mat)
         eigen_values = np.linalg.eigvalsh(cov_mat)
 
         if np.any(eigen_values <= min_allowed_eigen_value):
@@ -164,7 +166,7 @@ class GaussianImputer(Imputer):
             Random samples for the missing features of each coalition as an array of shape ``(n_coalitions, sample_size, n_features)``.
                 The columns corresponding to known features are filled with the value of ``x`` for that feature.
         """
-        x_explain = x.flatten()
+        x_explain = np.asarray(x, dtype=float).flatten()
         n_coalitions, n_features = coalitions.shape
         rng = default_rng(self.random_state)
 

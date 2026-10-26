@@ -229,4 +229,7 @@ class GaussianCopulaImputer(GaussianImputer):
 
         samples_gaussian = self._sample_monte_carlo(x_transformed, coalitions)
 
-        return self._transform_from_gaussian(samples_gaussian)
+        samples = self._transform_from_gaussian(samples_gaussian)
+        # Empirical CDF round-trips can change held-out or out-of-support values.
+        # Restore observed features exactly; only missing features are imputed.
+        return np.where(coalitions[:, np.newaxis, :], x[np.newaxis, np.newaxis, :], samples)

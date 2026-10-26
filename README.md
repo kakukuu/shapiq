@@ -1,5 +1,11 @@
 # shapiq: Shapley Interactions for Machine Learning <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mmschlk/shapiq/main/docs/source/_static/logo/shapiq-logo-horizontal-dark.svg"><img alt="shapiq" src="https://raw.githubusercontent.com/mmschlk/shapiq/main/docs/source/_static/logo/shapiq-logo-horizontal-light.svg" align="right" height="120px"></picture>
 
+> **Causal attribution preview:** this branch adds causal imputers and the
+> [daily bike-sharing experiments](examples/applications/causal_bike_sharing/README.md).
+> Follow that example's setup instructions to use the extension.
+> [Compatibility CI](https://github.com/kakukuu/shapiq/actions/workflows/causal-compatibility.yml?query=branch%3Afeature%2Fcausal-upstream-compat)
+> reports build and regression-test status; complete experiment results must be regenerated.
+
 [![PyPI version](https://badge.fury.io/py/shapiq.svg)](https://badge.fury.io/py/shapiq)
 [![License](https://img.shields.io/badge/License-MIT-brightgreen.svg)](https://opensource.org/licenses/MIT)
 [![codecov](https://codecov.io/gh/mmschlk/shapiq/branch/main/graph/badge.svg)](https://codecov.io/gh/mmschlk/shapiq)

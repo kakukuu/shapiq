@@ -1,0 +1,16 @@
+extend = "../../../pyproject.toml"
+
+[lint]
+# Tutorial helpers and fixture tests use the library's correctness checks,
+# without its public-API annotation and docstring requirements.
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
+ignore = []
+
+[lint.per-file-ignores]
+# Source-checkout discovery precedes imports of the library under study.
+"experiment_support/data_utils.py" = ["E402"]
+"tests/conftest.py" = ["E402"]
+"*.ipynb" = ["E402"]
+# Jupyter and plotting configuration must precede their initialization.
+"tests/execute_notebooks.py" = ["E402"]
+"tests/test_b_graph_integration.py" = ["E402"]

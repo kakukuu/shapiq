@@ -15,13 +15,16 @@ if TYPE_CHECKING:
     import numpy as np
 
     from shapiq.approximator.base import Approximator
+    from shapiq.imputer import NoMLCausalImputer
     from shapiq.imputer.base import Imputer
     from shapiq.interaction_values import InteractionValues
     from shapiq.typing import Model
 
 
 TabularExplainerApproximators = Literal[ValidApproximatorTypes, "exact"]
-TabularExplainerImputers = Literal["marginal", "baseline", "conditional"]
+TabularExplainerImputers = Literal[
+    "marginal", "baseline", "conditional", "causal", "do_causal", "no_ml_causal"
+]
 TabularExplainerIndices = ValidApproximationExplainerIndices
 
 
@@ -47,7 +50,7 @@ class TabularExplainer(Explainer):
         data: np.ndarray,
         *,
         class_index: int | None = None,
-        imputer: Imputer | TabularExplainerImputers = "marginal",
+        imputer: Imputer | NoMLCausalImputer | TabularExplainerImputers = "marginal",
         approximator: (
             Literal["auto"] | TabularExplainerApproximators | Approximator[TabularExplainerIndices]
         ) = "auto",
@@ -71,10 +74,13 @@ class TabularExplainer(Explainer):
 
             imputer: Either an :class:`~shapiq.games.imputer.Imputer` as implemented in the
                 :mod:`~shapiq.games.imputer` module, or a literal string from
-                ``["marginal", "baseline", "conditional"]``. Defaults to ``"marginal"``, which
+                ``["marginal", "baseline", "conditional", "causal", "do_causal", "no_ml_causal"]``.
+                Defaults to ``"marginal"``, which
                 initializes the default
                 :class:`~shapiq.games.imputer.marginal_imputer.MarginalImputer` with its default
-                parameters or as provided in ``kwargs``.
+                parameters or as provided in ``kwargs``. ``"causal"`` accepts ``ordering`` and
+                ``confounding``; ``"do_causal"`` requires ``dag_edges``; ``"no_ml_causal"``
+                requires target observations ``y`` and estimates predictions from the background.
 
             approximator: An :class:`~shapiq.approximator.Approximator` object to use for the
                 explainer or a literal string from
@@ -112,8 +118,13 @@ class TabularExplainer(Explainer):
         """
         from shapiq.imputer import (
             BaselineImputer,
+            CausalImputer,
+            DoCausalImputer,
+            GaussianCopulaImputer,
+            GaussianImputer,
             GenerativeConditionalImputer,
             MarginalImputer,
+            NoMLCausalImputer,
             TabPFNImputer,
         )
 
@@ -160,15 +171,43 @@ class TabularExplainer(Explainer):
                 random_state=random_state,
                 **kwargs,
             )
+        elif imputer == "causal":
+            self._imputer = CausalImputer(
+                self.predict, self._data, random_state=random_state, **kwargs
+            )
+        elif imputer == "do_causal":
+            if "dag_edges" not in kwargs:
+                msg = "The do_causal imputer requires dag_edges."
+                raise ValueError(msg)
+            self._imputer = DoCausalImputer(
+                self.predict, self._data, random_state=random_state, **kwargs
+            )
+        elif imputer == "no_ml_causal":
+            if "y" not in kwargs:
+                msg = "The no_ml_causal imputer requires target observations y."
+                raise ValueError(msg)
+            self._imputer = NoMLCausalImputer(
+                X=self._data, random_state=random_state, **kwargs
+            ).as_causal_imputer()
+        elif isinstance(imputer, NoMLCausalImputer):
+            self._imputer = imputer.as_causal_imputer()
         elif isinstance(
             imputer,
-            MarginalImputer | GenerativeConditionalImputer | BaselineImputer | TabPFNImputer,
+            MarginalImputer
+            | GenerativeConditionalImputer
+            | BaselineImputer
+            | TabPFNImputer
+            | GaussianImputer
+            | GaussianCopulaImputer
+            | CausalImputer
+            | DoCausalImputer,
         ):
             self._imputer = imputer
         else:
             msg = (
                 f"Invalid imputer {imputer}. "
-                f'Must be one of ["marginal", "baseline", "conditional"], or a valid Imputer '
+                f'Must be one of ["marginal", "baseline", "conditional", "causal", '
+                f'"do_causal", "no_ml_causal"], or a valid Imputer '
                 f"object."
             )
             raise ValueError(msg)

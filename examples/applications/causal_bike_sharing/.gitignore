@@ -1,0 +1,8 @@
+/results/
+/exports/
+/archive/
+/.experiment_run.lock
+/tests/.runtime/
+__pycache__/
+.pytest_cache/
+.ipynb_checkpoints/
