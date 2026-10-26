@@ -41,6 +41,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
       - name: Install the checkout and example dependencies
+        id: install
         run: |
           uv venv
           uv pip install -e . -r examples/applications/causal_bike_sharing/requirements.txt
@@ -57,4 +58,5 @@ jobs:
             tests/shapiq/tests_unit/tests_imputer/test_gaussian_and_copula.py \
             tests/shapiq/tests_unit/tests_imputer/test_gaussian_sampling_invariants.py
       - name: Test the daily bike-sharing example
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: uv run --no-sync python -m pytest -q -p no:cacheprovider examples/applications/causal_bike_sharing/tests

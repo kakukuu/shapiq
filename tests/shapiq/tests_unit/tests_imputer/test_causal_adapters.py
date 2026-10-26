@@ -44,7 +44,7 @@ def test_causal_selector_supports_exact_explainer(data, sampling_method):
     )
     assert isinstance(explainer.imputer, CausalImputer)
     x = np.array([2.3, -1.7, 0.2])
-    result = explainer.explain(x)
+    result = explainer.explain(x, budget=2 ** len(x))
     total = result.baseline_value + sum(
         value for interaction, value in result.dict_values.items() if interaction
     )
