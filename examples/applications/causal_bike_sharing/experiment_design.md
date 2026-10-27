@@ -13,7 +13,9 @@ the full training background and the held-out inputs.
 Lag replaces temperature, humidity and wind speed with previous-day readings and
 drops the first date. The two designs share 584 training and 146 test target dates,
 but fit separate models. Apparent temperature remains same-day. Differences combine
-input and model changes; the random holdout is an attribution-design comparison.
+input and model changes and cannot be attributed entirely to causal-structure
+changes. The random holdout is an attribution-design comparison, not an assessment
+of prospective forecasting performance.
 
 ## Explanations and repeats
 
@@ -27,24 +29,61 @@ input and model changes; the random holdout is an attribution-design comparison.
   remain fixed within each comparison; both arms are evaluated for each repeat.
 - Observed coalition features retain their input values. The empty coalition uses
   the declared background prediction mean. Each decomposition must reconstruct its
-  prediction within an absolute tolerance of `1e-4` rentals.
+  prediction within an absolute tolerance of `1e-4` rentals:
+  `baseline + sum(singleton terms) + sum(pair interactions) = model prediction`.
+  The tolerance accommodates floating-point regression residuals. Both new and
+  cached results are checked; discovery-run residuals are exported to
+  `results/tables/efficiency_checks.csv`.
+
+## Comparison rationale
+
+Hashmi et al. note that the definition of a value function includes an imputation
+mechanism for features excluded from the coalition, and they use explanation
+consistency metrics to compare attributions produced by different value functions.
+We adopt this comparative approach: in our A/B experiments, we hold the predictive
+model, background data, and explained instances fixed to examine how changes in
+the imputation mechanism and its assumptions about causal structure affect
+explanations.
+
+We compare k-SII terms of the same order, treating singleton contributions and
+second-order interactions as two separate comparison sets and explicitly
+distinguishing rankings by signed values from rankings by absolute values. In
+addition to ranking comparisons, we report changes in contribution values and
+signs and examine individual instances to identify local differences that
+aggregate statistics may obscure. The numerical change metrics, case selection
+rules, and repeated-sampling checks used here are specific to the experimental
+design of this study.
 
 ## Comparisons and selection
 
 A compares causal and marginal imputations. B includes eight ordering/confounding
 variants. An ordering change can alter multiple ancestor relations, conditioning
-sets and joint sampling groups.
+sets and joint sampling groups; it is not necessarily a single-edge intervention.
+
+Each comparison retains population summaries, metrics for every date, all seven
+singleton terms and 21 pair interactions per date, selected cases and independent
+validation repeats. Networks label baseline values, modified values and differences
+directly. Additional matrices and six-panel diagnostic views are disabled by default.
 
 All differences are modified minus baseline. Reports distinguish signed mean
-change, mean absolute change, and mean attribution-magnitude change. L1 changes sum
-absolute differences within each interaction order. Signed and absolute Kendall
-rank agreements are computed per date before averaging.
+change, mean absolute change (`mean(abs(delta))`), and mean attribution-magnitude
+change (`mean(abs(modified) - abs(baseline))`). First-order L1 sums absolute changes
+across seven singleton terms; second-order L1 sums across 21 pairs. Signed and
+absolute Kendall rank agreements are computed per date before averaging.
 
-The default [case-selection rules](README.md#case-selection) apply to individual
-declared singleton terms or pairs. Cases are selected using discovery values and
-frozen before repeat validation. Cached draws can be reused when their provenance
-matches. Validation does not change the selected dates. Whole-explanation L1
-examples remain supplementary diagnostics.
+The six default [case-selection rules](README.md#case-selection) apply to declared
+singleton terms or pairs. Singleton targets use the first five rules; pairs use
+all six. Each target/rule retains its best eligible representative.
+Dates selected more than once within a comparison are merged while preserving all
+reasons, with no overall case limit. Rank conditions apply only to the target's
+interaction order; material sign reversals require sufficiently large magnitudes
+at both endpoints. Complete candidate records retain thresholds, their origins and
+reasons for ineligibility.
+
+Cases are selected using discovery values only and frozen before repeat validation.
+Cached draws can be reused when their provenance matches. Unstable validation
+results do not lead to case replacement. Whole-explanation L1 strong, typical and
+weak cases remain supplementary diagnostics.
 
 ## Interpretation
 
@@ -55,9 +94,12 @@ define imputation assumptions.
 
 Paired row-bootstrap intervals describe test-composition variation conditional on
 the computed explanations. They do not cover temporal dependence, imputation error
-or all comparisons jointly. Eight-seed repeat ranges describe computational
-variability. Four-metric rank calibration is configuration-specific.
+or all comparisons jointly. The 10th–90th percentile ranges across eight imputation
+repeats describe computational variability, not population confidence intervals.
+Four-metric rank calibration is configuration-specific. Sensitivity to an assumed
+causal graph does not establish that graph's correctness.
 
-Source, data, model, dependency and output checksums govern result reuse. Existing
-case outputs are replaced only after model provenance and requested selections
-have passed validation.
+Source, data, model, dependency and output checksums govern result reuse, including
+statistical JSON outputs. Historical audit files are not runtime dependencies.
+Existing case outputs are replaced only after model provenance and requested
+selections have passed validation, with previous outputs archived before replacement.
